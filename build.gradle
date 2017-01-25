@@ -1,0 +1,179 @@
+/*
+ * Copyright (c) 2017 IBM Corp.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+*/
+
+buildscript {
+    repositories {
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'net.wasdev.wlp.gradle.plugins:liberty-gradle-plugin:1.0'
+        classpath files('gradle/wlp-anttasks.jar')
+    }
+
+    configurations {
+      jmockit
+      testCompile.extendsFrom jmockit
+    }
+}
+
+apply plugin: 'war'
+apply plugin: 'liberty'
+
+apply plugin: 'eclipse-wtp'
+
+sourceCompatibility = 1.8
+targetCompatibility = 1.8
+
+compileJava.options.encoding = 'UTF-8'
+
+ext {
+    // Liberty server properties
+    wlpServerName = 'CodegenServer'
+    serverDirectory = "${buildDir}/wlp/usr/servers/${wlpServerName}"
+    testServerHttpPort = 9082
+    testServerHttpsPort = 9443
+
+    // This is set in the ibm-web-ext.xml file
+    warContext = 'generate'
+    appName = 'javacodegen'
+    packageFile = "${project.buildDir}/${appName}.zip"
+    packagingType = 'usr'
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    testCompile 'junit:junit:4.12'
+    jmockit 'org.jmockit:jmockit:1.22'
+    testCompile 'org.apache.cxf:cxf-rt-rs-client:3.1.1'
+    testCompile 'org.glassfish:javax.json:1.0.4'
+    testCompile group: 'org.hamcrest', name: 'java-hamcrest', version: '2.0.0.0'
+
+    providedCompile 'javax.ws.rs:javax.ws.rs-api:2.0.1'
+    providedCompile 'javax.json:javax.json-api:1.0'
+    providedCompile 'com.ibm.websphere.appserver.api:com.ibm.websphere.appserver.api.jaxrs20:1.0.10'
+    providedCompile 'com.ibm.websphere.appserver.api:com.ibm.websphere.appserver.api.json:1.0.10'
+
+    compile 'com.samskivert:jmustache:1.13'
+    compile group: 'org.eclipse.mylyn.github', name: 'org.eclipse.egit.github.core', version: '2.1.5'
+
+}
+
+
+test {
+    reports.html.destination = file("$buildDir/reports/unit")
+    reports.junitXml.destination = file("$buildDir/test-results/unit")
+    exclude '**/it/**'
+}
+
+task integrationTest(type: Test) {
+    group 'Verification'
+    description 'Runs the integration tests.'
+    reports.html.destination = file("$buildDir/reports/it")
+    reports.junitXml.destination = file("$buildDir/test-results/it")
+    include '**/it/**'
+    exclude '**/unit/**'
+
+    systemProperties = ['liberty.test.port': testServerHttpPort, 'war.name': warContext]
+}
+
+task printMessageAboutRunningServer {
+    doLast {
+        println "The server is now running at http://localhost:${testServerHttpPort}/${warContext}"
+        println "To stop the server run 'gradle libertyStop'"
+    }
+}
+
+task publishServerConfig(type: Copy) {
+    from 'src/main/liberty/config/server.xml'
+    into serverDirectory
+}
+
+task publishWar(type: Copy) {
+    from(war)
+    into("${serverDirectory}/dropins")
+}
+
+task createServerBootstrap() {
+    outputs.file("${serverDirectory}/bootstrap.properties")
+    doLast {
+        def bootstrapProperties = file("${serverDirectory}/bootstrap.properties")
+        if (!bootstrapProperties.exists()) {
+            bootstrapProperties << "default.http.port=${testServerHttpPort}\ndefault.https.port=${testServerHttpsPort}\ncom.ibm.ws.logging.trace.file.name=stdout"
+        }
+    }
+}
+
+liberty {
+    install {
+        runtimeUrl = "http://repo1.maven.org/maven2/com/ibm/websphere/appserver/runtime/wlp-webProfile7/16.0.0.4/wlp-webProfile7-16.0.0.4.zip"
+    }
+    serverName = wlpServerName
+    packageLiberty {
+        archive = packageFile
+        include = packagingType
+    }
+}
+
+task libertyStartTestServer(type: net.wasdev.wlp.gradle.plugins.tasks.StartTask){
+    description 'Starts the WebSphere Liberty Profile server for testing.'
+    logging.level = LogLevel.INFO
+}
+
+
+
+// Set the Eclipse facets to use 3.1 of the Dynamic Web Module which requires Java 1.7 (at least)
+// And JAX-RS 2.0, and JavaScript
+eclipse.wtp.facet {
+    // Clear default facets to work around bug where you get duplicates including wst 2.4
+    facets = []
+    facet name: 'jst.java', type: 'fixed'
+    facet name: 'jst.web', type: 'fixed'
+    facet name: 'jst.web', version: '3.1'
+    facet name: 'jst.java', version: '1.8'
+    facet name: 'jst.jaxrs', version: '2.0'
+    facet name: 'wst.jsdt.web', type: 'fixed'
+    facet name: 'wst.jsdt.web', version: '1.0'
+}
+
+// Add additional code conventions
+eclipse.jdt.file {
+    withProperties {
+      it['org.eclipse.jdt.core.formatter.indentation.size'] = '4'
+      it['org.eclipse.jdt.core.formatter.tabulation.size'] = '4'
+      it['org.eclipse.jdt.core.formatter.tabulation.char'] = 'space'
+      it['org.eclipse.jdt.core.formatter.indent_switchstatements_compare_to_cases'] = 'true'
+      it['org.eclipse.jdt.core.formatter.indent_switchstatements_compare_to_switch'] = 'true'
+      it['org.eclipse.jdt.core.formatter.alignment_for_arguments_in_annotation'] = '18'
+    }
+}
+
+tasks.create('setupServer')
+check.dependsOn 'integrationTest'
+setupServer.dependsOn 'installLiberty', 'createServerBootstrap', 'publishServerConfig', 'publishWar'
+createServerBootstrap.mustRunAfter 'installLiberty', 'publishServerConfig'
+publishServerConfig.mustRunAfter 'installLiberty'
+publishWar.mustRunAfter 'installLiberty'
+publishWar.dependsOn 'war'
+libertyStart.dependsOn 'setupServer'
+integrationTest.dependsOn 'libertyStartTestServer', 'testClasses'
+integrationTest.finalizedBy 'libertyStop'
+libertyStartTestServer.dependsOn 'setupServer'
+assemble.dependsOn 'libertyPackage'
+libertyPackage.dependsOn 'setupServer'
+libertyStart.finalizedBy 'printMessageAboutRunningServer'
